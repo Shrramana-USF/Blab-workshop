@@ -159,7 +159,7 @@ def gemini_byo_prompt(
 
 # ---------------- UPLOAD TAB ----------------
 def upload_tab(folder_id):
-    st.markdown("### 📤 Upload Audio for Analysis")
+    st.subheader("Upload Audio for Analysis")
 
     # --- Persist AI outputs across reruns ---
     if "upload_ai_df" not in st.session_state:

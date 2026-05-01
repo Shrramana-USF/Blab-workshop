@@ -167,7 +167,7 @@ def gemini_byo_prompt(
 
 def record_tab(folder_id):
     # --- Task selection ---
-    st.markdown("### 🎙️ Record Audio for Analysis")
+    st.subheader("Record Audio for Analysis")
 
     # --- Persist AI outputs across reruns ---
     if "record_ai_df" not in st.session_state:
