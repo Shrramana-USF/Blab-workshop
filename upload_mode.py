@@ -72,6 +72,11 @@ C) Any potential flags (bullets) — only if supported by the data/audio; otherw
 D) Suggestions (bullets): e.g., repeat recording conditions, consult clinician if symptoms exist, etc.
 """
 
+    # DEBUG: Show the prompt being sent
+    with st.expander("🔍 DEBUG: Prompt sent to API", expanded=False):
+        st.code(prompt, language="text")
+        st.caption(f"+ Audio WAV attached ({len(audio_wav_bytes)} bytes)")
+
     audio_part = {
         "inline_data": {
             "mime_type": "audio/wav",
@@ -102,9 +107,12 @@ def gemini_byo_prompt(
     content_parts = []
 
     # Build the prompt based on the option
+    debug_info = []
+
     if byo_option == "Only audio":
         full_prompt = f"{user_prompt}\n\n[Audio recording is attached below]"
         content_parts.append(full_prompt)
+        debug_info.append(f"Prompt:\n{full_prompt}")
         if audio_wav_bytes:
             audio_part = {
                 "inline_data": {
@@ -113,16 +121,19 @@ def gemini_byo_prompt(
                 }
             }
             content_parts.append(audio_part)
+            debug_info.append(f"+ Audio WAV attached ({len(audio_wav_bytes)} bytes)")
 
     elif byo_option == "Only extracted features":
         rows = df_features.to_dict(orient="records") if df_features is not None else []
         full_prompt = f"{user_prompt}\n\nExtracted acoustic features (Feature, Value): {rows}"
         content_parts.append(full_prompt)
+        debug_info.append(f"Prompt:\n{full_prompt}")
 
     elif byo_option == "Both audio and features":
         rows = df_features.to_dict(orient="records") if df_features is not None else []
         full_prompt = f"{user_prompt}\n\nExtracted acoustic features (Feature, Value): {rows}\n\n[Audio recording is attached below]"
         content_parts.append(full_prompt)
+        debug_info.append(f"Prompt:\n{full_prompt}")
         if audio_wav_bytes:
             audio_part = {
                 "inline_data": {
@@ -131,9 +142,16 @@ def gemini_byo_prompt(
                 }
             }
             content_parts.append(audio_part)
+            debug_info.append(f"+ Audio WAV attached ({len(audio_wav_bytes)} bytes)")
 
     else:  # "Just prompt"
         content_parts.append(user_prompt)
+        debug_info.append(f"Prompt:\n{user_prompt}")
+
+    # DEBUG: Show the prompt being sent
+    with st.expander("🔍 DEBUG: BYO Prompt sent to API", expanded=False):
+        st.code("\n".join(debug_info), language="text")
+        st.caption(f"Mode: {byo_option}")
 
     resp = model.generate_content(content_parts)
     return resp.text if hasattr(resp, "text") else str(resp)
@@ -270,6 +288,17 @@ def upload_tab(folder_id):
                                 "role": msg["role"] if msg["role"] == "user" else "model",
                                 "parts": [msg["content"]]
                             })
+
+                        # DEBUG: Show conversation context being sent
+                        with st.expander("🔍 DEBUG: Chat API Call", expanded=False):
+                            st.write("**History being sent:**")
+                            if gemini_history:
+                                for i, h in enumerate(gemini_history):
+                                    st.text(f"[{i}] {h['role']}: {h['parts'][0][:100]}...")
+                            else:
+                                st.text("(No history - new conversation)")
+                            st.write("**New message:**")
+                            st.code(byo_prompt, language="text")
 
                         # Create chat session with history
                         chat = model.start_chat(history=gemini_history)
