@@ -37,6 +37,7 @@ def init_gemini():
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemma-4-31b-it")
+    
     return model, None
 
 
@@ -84,7 +85,7 @@ D) Suggestions (bullets): e.g., repeat recording conditions, consult clinician i
         }
     }
 
-    resp = model.generate_content([prompt, audio_part])
+    resp = model.generate_content([prompt, audio_part], generation_config=genai.GenerationConfig(temperature=0.5))
     return resp.text if hasattr(resp, "text") else str(resp)
 
 

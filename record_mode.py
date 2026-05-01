@@ -95,7 +95,7 @@ D) Suggestions (bullets): e.g., repeat recording conditions, consult clinician i
     #     st.code(prompt, language="text")
     #     st.caption(f"+ Audio WAV attached ({len(audio_wav_bytes)} bytes)")
 
-    resp = model.generate_content([prompt, audio_part])
+    resp = model.generate_content([prompt, audio_part], generation_config=genai.GenerationConfig(temperature=0.5))
     return resp.text if hasattr(resp, "text") else str(resp)
 
 
