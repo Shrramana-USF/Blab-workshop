@@ -83,6 +83,62 @@ D) Suggestions (bullets): e.g., repeat recording conditions, consult clinician i
     return resp.text if hasattr(resp, "text") else str(resp)
 
 
+def gemini_byo_prompt(
+    model,
+    user_prompt: str,
+    byo_option: str,
+    df_features: pd.DataFrame = None,
+    audio_wav_bytes: bytes = None
+):
+    """
+    Sends user's custom prompt with optional audio and/or features to Gemini.
+
+    byo_option can be:
+    - "Only audio": sends prompt + audio WAV bytes (no features)
+    - "Only extracted features": sends prompt + features DataFrame (no audio)
+    - "Both audio and features": sends prompt + audio + features
+    - "Just prompt": sends only the user's text prompt (no audio, no features)
+    """
+    content_parts = []
+
+    # Build the prompt based on the option
+    if byo_option == "Only audio":
+        full_prompt = f"{user_prompt}\n\n[Audio recording is attached below]"
+        content_parts.append(full_prompt)
+        if audio_wav_bytes:
+            audio_part = {
+                "inline_data": {
+                    "mime_type": "audio/wav",
+                    "data": audio_wav_bytes
+                }
+            }
+            content_parts.append(audio_part)
+
+    elif byo_option == "Only extracted features":
+        rows = df_features.to_dict(orient="records") if df_features is not None else []
+        full_prompt = f"{user_prompt}\n\nExtracted acoustic features (Feature, Value): {rows}"
+        content_parts.append(full_prompt)
+
+    elif byo_option == "Both audio and features":
+        rows = df_features.to_dict(orient="records") if df_features is not None else []
+        full_prompt = f"{user_prompt}\n\nExtracted acoustic features (Feature, Value): {rows}\n\n[Audio recording is attached below]"
+        content_parts.append(full_prompt)
+        if audio_wav_bytes:
+            audio_part = {
+                "inline_data": {
+                    "mime_type": "audio/wav",
+                    "data": audio_wav_bytes
+                }
+            }
+            content_parts.append(audio_part)
+
+    else:  # "Just prompt"
+        content_parts.append(user_prompt)
+
+    resp = model.generate_content(content_parts)
+    return resp.text if hasattr(resp, "text") else str(resp)
+
+
 # ---------------- UPLOAD TAB ----------------
 def upload_tab(folder_id):
     st.subheader("Upload Audio for Task")
@@ -90,7 +146,7 @@ def upload_tab(folder_id):
     # --- Step 1: Task Selection ---
     tasks = [ "Rainbow passage", "Maximum sustained phonation on 'aaah'", "Comfortable sustained phonation on 'eeee'",
              "Glide up to your highest pitch on 'eeee'", "Glide down to your lowest pitch on 'eeee'",
-             "Sustained 'aaah' at minimum volume", "Maximum loudness level (brief 'AAAH')", "Conversational speech"]
+             "Sustained 'aaah' at minimum volume", "Maximum loudness level (brief 'AAAH')", "Conversational speech", "Random"]
 
     selected_task = st.radio(
         "Select a task to continue:",
@@ -156,21 +212,61 @@ def upload_tab(folder_id):
         st.session_state.upload_ai_gemini_text = None
     if "upload_ai_last_task" not in st.session_state:
         st.session_state.upload_ai_last_task = None
+    # BYO prompt session state
+    if "upload_byo_gemini_text" not in st.session_state:
+        st.session_state.upload_byo_gemini_text = None
+    if "upload_byo_mode_active" not in st.session_state:
+        st.session_state.upload_byo_mode_active = False
 
     # Clear previous AI results when switching tasks
     if st.session_state.upload_ai_last_task != selected_task:
         st.session_state.upload_ai_df = None
         st.session_state.upload_ai_gemini_text = None
+        st.session_state.upload_byo_gemini_text = None
+        st.session_state.upload_byo_mode_active = False
         st.session_state.upload_ai_last_task = selected_task
 
-    # --- Two buttons side by side ---
-    col1, col2 = st.columns(2)
+    # --- Three buttons side by side ---
+    col1, col2, col3 = st.columns(3)
     analyze_clicked = col1.button("Analyse Audio", key=analyze_btn_key)
-    analyze_ai_clicked = col2.button("Analyse Audio with AI", key=f"upload_analyze_ai_{selected_task}")
+    analyze_ai_clicked = col2.button("Default Analysis with AI", key=f"upload_analyze_ai_{selected_task}")
+    analyze_byo_clicked = col3.button("Analyse with BYO Prompt", key=f"upload_analyze_byo_{selected_task}")
+
+    # --- BYO Prompt UI Elements ---
+    # Show BYO options when BYO button is clicked or mode is active
+    if analyze_byo_clicked:
+        st.session_state.upload_byo_mode_active = True
+
+    if st.session_state.upload_byo_mode_active:
+        st.markdown("---")
+        st.markdown("#### BYO Prompt Configuration")
+
+        byo_option = st.radio(
+            "What to send to AI:",
+            options=["Only audio", "Only extracted features", "Both audio and features", "Just prompt"],
+            index=2,  # Default to "Both audio and features"
+            horizontal=True,
+            key=f"upload_byo_option_{selected_task}",
+        )
+
+        byo_prompt = st.text_area(
+            "Enter your custom prompt:",
+            placeholder="E.g., 'Analyze this voice recording for signs of vocal fatigue' or 'Compare this voice to typical patterns for a 30-year-old speaker'",
+            height=150,
+            key=f"upload_byo_prompt_{selected_task}",
+        )
+
+        # Submit button for BYO analysis
+        byo_submit_clicked = st.button("Submit BYO Analysis", key=f"upload_byo_submit_{selected_task}", type="primary")
+        st.markdown("---")
+    else:
+        byo_submit_clicked = False
+        byo_option = None
+        byo_prompt = ""
 
     y_region = None
 
-    if analyze_clicked or analyze_ai_clicked:
+    if analyze_clicked or analyze_ai_clicked or byo_submit_clicked:
         if result and result.get("selectedRegion"):
             start = result["selectedRegion"]["start"]
             end = result["selectedRegion"]["end"]
@@ -265,10 +361,49 @@ def upload_tab(folder_id):
                     except Exception as e:
                         st.session_state.upload_ai_gemini_text = f"Gemini failed: {e}"
 
+            # If BYO submit was clicked, call Gemini with custom prompt
+            if byo_submit_clicked:
+                if not byo_prompt or not byo_prompt.strip():
+                    st.warning("Please enter a custom prompt before submitting.")
+                else:
+                    model, err = init_gemini()
+                    if err:
+                        st.session_state.upload_byo_gemini_text = f" {err}"
+                    else:
+                        # Prepare audio bytes if needed
+                        region_wav_bytes = None
+                        if byo_option in ["Only audio", "Both audio and features"]:
+                            region_temp_path = save_temp_mono_wav(y_region, sr)
+                            try:
+                                with open(region_temp_path, "rb") as f:
+                                    region_wav_bytes = f.read()
+                            finally:
+                                try:
+                                    os.unlink(region_temp_path)
+                                except Exception:
+                                    pass
+
+                        try:
+                            with st.spinner("Sending BYO prompt to Gemini..."):
+                                st.session_state.upload_byo_gemini_text = gemini_byo_prompt(
+                                    model=model,
+                                    user_prompt=byo_prompt,
+                                    byo_option=byo_option,
+                                    df_features=df if byo_option in ["Only extracted features", "Both audio and features"] else None,
+                                    audio_wav_bytes=region_wav_bytes,
+                                )
+                        except Exception as e:
+                            st.session_state.upload_byo_gemini_text = f"Gemini failed: {e}"
+
             # Display persisted Gemini response (if any)
             if st.session_state.upload_ai_gemini_text:
                 st.subheader("Gemini Response")
                 st.markdown(st.session_state.upload_ai_gemini_text)
+
+            # Display persisted BYO Gemini response (if any)
+            if st.session_state.upload_byo_gemini_text:
+                st.subheader("BYO Prompt Response")
+                st.markdown(st.session_state.upload_byo_gemini_text)
 
             if save_auto:
                 with st.spinner("Saving the analysis", show_time=True):
@@ -280,6 +415,27 @@ def upload_tab(folder_id):
                 st.info("Analysis completed (not saved). Check 'Save automatically' to reanalyse and store results.")
                 st.toast("Analysis completed (not saved).")
     else:
+        # Handle "Just prompt" BYO option - no audio analysis needed
+        if byo_submit_clicked and byo_option == "Just prompt":
+            if not byo_prompt or not byo_prompt.strip():
+                st.warning("Please enter a custom prompt before submitting.")
+            else:
+                model, err = init_gemini()
+                if err:
+                    st.session_state.upload_byo_gemini_text = f" {err}"
+                else:
+                    try:
+                        with st.spinner("Sending BYO prompt to Gemini..."):
+                            st.session_state.upload_byo_gemini_text = gemini_byo_prompt(
+                                model=model,
+                                user_prompt=byo_prompt,
+                                byo_option=byo_option,
+                                df_features=None,
+                                audio_wav_bytes=None,
+                            )
+                    except Exception as e:
+                        st.session_state.upload_byo_gemini_text = f"Gemini failed: {e}"
+
         # If user previously ran AI and we reran, still show persisted outputs
         if st.session_state.upload_ai_df is not None:
             st.subheader("Extracted Features (previous run)")
@@ -288,3 +444,7 @@ def upload_tab(folder_id):
         if st.session_state.upload_ai_gemini_text:
             st.subheader("Gemini Response (previous run)")
             st.markdown(st.session_state.upload_ai_gemini_text)
+
+        if st.session_state.upload_byo_gemini_text:
+            st.subheader("BYO Prompt Response (previous run)")
+            st.markdown(st.session_state.upload_byo_gemini_text)
