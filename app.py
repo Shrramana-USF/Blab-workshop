@@ -33,7 +33,8 @@ st.markdown("""
     }
 
     .logo-header img {
-        height: 60px;
+        width: 200px;
+        height: auto;
         margin-bottom: 0.5rem;
     }
 
@@ -52,7 +53,7 @@ st.markdown("""
 def render_logo():
     """Render the logo from SVG file"""
     try:
-        with open("main_logo_black.svg", "r") as f:
+        with open("main_logo_violet.svg", "r") as f:
             svg = f.read()
         import base64
         b64 = base64.b64encode(svg.encode()).decode()
