@@ -9,8 +9,14 @@ from analysis_utils import *
 
 # ---------------- Global Config ----------------
 st.set_page_config(page_title="Acoustic Analysis Tool")
-st.title("Acoustic Analysis Dashboard")
-st.caption("Backend processing with PRAAT")
+
+# Header with logo and title
+logo_col, title_col = st.columns([1, 5])
+with logo_col:
+    st.image("main_logo_violet.svg", width=80)
+with title_col:
+    st.title("Acoustic Analysis Dashboard")
+    st.caption("Backend processing with PRAAT")
 
 
 # ---------------- AUTHENTICATION ----------------
