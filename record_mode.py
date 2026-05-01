@@ -35,8 +35,7 @@ def init_gemini():
         return None, "Missing GOOGLE_API_KEY. Add it to Streamlit Secrets (recommended) or as an environment variable."
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("Gemini 3.1 Pro")
-    # gemini-3-flash-preview
+    model = genai.GenerativeModel("gemini-3-flash-preview")
     return model, None
 
 
