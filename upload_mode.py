@@ -72,10 +72,10 @@ C) Any potential flags (bullets) — only if supported by the data/audio; otherw
 D) Suggestions (bullets): e.g., repeat recording conditions, consult clinician if symptoms exist, etc.
 """
 
-    # DEBUG: Show the prompt being sent
-    with st.expander("🔍 DEBUG: Prompt sent to API", expanded=False):
-        st.code(prompt, language="text")
-        st.caption(f"+ Audio WAV attached ({len(audio_wav_bytes)} bytes)")
+    # # DEBUG: Show the prompt being sent
+    # with st.expander("🔍 DEBUG: Prompt sent to API", expanded=False):
+    #     st.code(prompt, language="text")
+    #     st.caption(f"+ Audio WAV attached ({len(audio_wav_bytes)} bytes)")
 
     audio_part = {
         "inline_data": {
@@ -148,10 +148,10 @@ def gemini_byo_prompt(
         content_parts.append(user_prompt)
         debug_info.append(f"Prompt:\n{user_prompt}")
 
-    # DEBUG: Show the prompt being sent
-    with st.expander("🔍 DEBUG: BYO Prompt sent to API", expanded=False):
-        st.code("\n".join(debug_info), language="text")
-        st.caption(f"Mode: {byo_option}")
+    # # DEBUG: Show the prompt being sent
+    # with st.expander("🔍 DEBUG: BYO Prompt sent to API", expanded=False):
+    #     st.code("\n".join(debug_info), language="text")
+    #     st.caption(f"Mode: {byo_option}")
 
     resp = model.generate_content(content_parts)
     return resp.text if hasattr(resp, "text") else str(resp)
@@ -159,7 +159,7 @@ def gemini_byo_prompt(
 
 # ---------------- UPLOAD TAB ----------------
 def upload_tab(folder_id):
-    st.subheader("Upload Audio for Task")
+    st.markdown("### 📤 Upload Audio for Analysis")
 
     # --- Persist AI outputs across reruns ---
     if "upload_ai_df" not in st.session_state:
@@ -289,16 +289,16 @@ def upload_tab(folder_id):
                                 "parts": [msg["content"]]
                             })
 
-                        # DEBUG: Show conversation context being sent
-                        with st.expander("🔍 DEBUG: Chat API Call", expanded=False):
-                            st.write("**History being sent:**")
-                            if gemini_history:
-                                for i, h in enumerate(gemini_history):
-                                    st.text(f"[{i}] {h['role']}: {h['parts'][0][:100]}...")
-                            else:
-                                st.text("(No history - new conversation)")
-                            st.write("**New message:**")
-                            st.code(byo_prompt, language="text")
+                        # # DEBUG: Show conversation context being sent
+                        # with st.expander("🔍 DEBUG: Chat API Call", expanded=False):
+                        #     st.write("**History being sent:**")
+                        #     if gemini_history:
+                        #         for i, h in enumerate(gemini_history):
+                        #             st.text(f"[{i}] {h['role']}: {h['parts'][0][:100]}...")
+                        #     else:
+                        #         st.text("(No history - new conversation)")
+                        #     st.write("**New message:**")
+                        #     st.code(byo_prompt, language="text")
 
                         # Create chat session with history
                         chat = model.start_chat(history=gemini_history)
@@ -332,7 +332,7 @@ def upload_tab(folder_id):
             # Standard text area for other options
             byo_prompt = st.text_area(
                 "Enter your custom prompt:",
-                placeholder="E.g., 'Analyze this voice recording for signs of vocal fatigue' or 'Compare this voice to typical patterns for a 30-year-old speaker'",
+                placeholder="",
                 height=150,
                 key=f"upload_byo_prompt_{selected_task}",
             )
@@ -449,11 +449,6 @@ def upload_tab(folder_id):
             ax.set_title("Intensity contour")
             st.pyplot(fig)
             figs["intensity"] = fig
-
-            spectrogram = compute_spectrogram(snd)
-            fig = plot_spectrogram(spectrogram)
-            st.pyplot(fig)
-            figs["spectrogram"] = fig
 
             # If AI mode, call Gemini
             if st.session_state.upload_analysis_mode == "ai":
