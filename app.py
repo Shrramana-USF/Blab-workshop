@@ -10,10 +10,20 @@ from analysis_utils import *
 # ---------------- Global Config ----------------
 st.set_page_config(page_title="Acoustic Analysis Tool")
 
+# CSS to vertically align columns
+st.markdown("""
+<style>
+    /* Vertically center the header columns */
+    div[data-testid="stHorizontalBlock"]:first-of-type {
+        align-items: center;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # Header with logo and title
-logo_col, title_col = st.columns([1, 5])
+logo_col, title_col = st.columns([1, 4])
 with logo_col:
-    st.image("main_logo_violet.svg", width=80)
+    st.image("main_logo_violet.svg", use_container_width=True)
 with title_col:
     st.title("BLab Acoustic Analysis Dashboard")
     st.caption("Platform is backed with Praat-Parselmouth & Gemini")
