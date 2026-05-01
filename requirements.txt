@@ -1,0 +1,12 @@
+numpy
+pandas
+matplotlib
+soundfile
+praat-parselmouth
+google-generativeai
+pillow
+streamlit>=1.49
+streamlit-audiorec
+streamlit-advanced-audio
+box_sdk_gen
+Authlib>=1.3.2
