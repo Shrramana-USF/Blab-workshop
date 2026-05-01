@@ -143,6 +143,25 @@ def gemini_byo_prompt(
 def upload_tab(folder_id):
     st.subheader("Upload Audio for Task")
 
+    # --- Persist AI outputs across reruns ---
+    if "upload_ai_df" not in st.session_state:
+        st.session_state.upload_ai_df = None
+    if "upload_ai_gemini_text" not in st.session_state:
+        st.session_state.upload_ai_gemini_text = None
+    if "upload_ai_last_task" not in st.session_state:
+        st.session_state.upload_ai_last_task = None
+    # BYO prompt session state
+    if "upload_byo_gemini_text" not in st.session_state:
+        st.session_state.upload_byo_gemini_text = None
+    if "upload_byo_mode_active" not in st.session_state:
+        st.session_state.upload_byo_mode_active = False
+    # Chat conversation state for "Just prompt" mode
+    if "upload_byo_chat_history" not in st.session_state:
+        st.session_state.upload_byo_chat_history = []
+    # Track selected analysis mode
+    if "upload_analysis_mode" not in st.session_state:
+        st.session_state.upload_analysis_mode = None
+
     # --- Step 1: Task Selection ---
     tasks = [ "Rainbow passage", "Maximum sustained phonation on 'aaah'", "Comfortable sustained phonation on 'eeee'",
              "Glide up to your highest pitch on 'eeee'", "Glide down to your lowest pitch on 'eeee'",
@@ -155,28 +174,162 @@ def upload_tab(folder_id):
         horizontal=True
     )
 
-    # --- Step 2: Stop here if no task chosen yet ---
     # Stop until a task is chosen
     if selected_task is None:
-        st.info("Please select a task to enable uploading.")
+        st.info("Please select a task to continue.")
         return
 
     st.markdown(f"### Selected Task: {selected_task}")
+
+    # Clear previous AI results when switching tasks
+    if st.session_state.upload_ai_last_task != selected_task:
+        st.session_state.upload_ai_df = None
+        st.session_state.upload_ai_gemini_text = None
+        st.session_state.upload_byo_gemini_text = None
+        st.session_state.upload_byo_mode_active = False
+        st.session_state.upload_byo_chat_history = []
+        st.session_state.upload_analysis_mode = None
+        st.session_state.upload_ai_last_task = selected_task
+
+    # --- Step 2: Analysis Mode Selection ---
+    st.markdown("#### Select Analysis Mode")
+    col1, col2, col3 = st.columns(3)
+
+    if col1.button("Analyse Audio", key=f"upload_analyze_{selected_task}", use_container_width=True):
+        st.session_state.upload_analysis_mode = "praat"
+        st.session_state.upload_byo_mode_active = False
+
+    if col2.button("Default Analysis with AI", key=f"upload_analyze_ai_{selected_task}", use_container_width=True):
+        st.session_state.upload_analysis_mode = "ai"
+        st.session_state.upload_byo_mode_active = False
+
+    if col3.button("BYO Prompt", key=f"upload_analyze_byo_{selected_task}", use_container_width=True):
+        st.session_state.upload_analysis_mode = "byo"
+        st.session_state.upload_byo_mode_active = True
+
+    # Show current selection
+    mode_labels = {
+        "praat": "PRAAT Analysis Only",
+        "ai": "Default Analysis with AI",
+        "byo": "BYO Prompt"
+    }
+
+    if st.session_state.upload_analysis_mode:
+        st.success(f"Selected: **{mode_labels[st.session_state.upload_analysis_mode]}**")
+
+    # --- BYO Prompt Configuration (if BYO mode selected) ---
+    byo_option = None
+    byo_prompt = ""
+    byo_submit_clicked = False
+
+    if st.session_state.upload_byo_mode_active:
+        st.markdown("---")
+        st.markdown("#### BYO Prompt Configuration")
+
+        byo_option = st.radio(
+            "What to send to AI:",
+            options=["Only audio", "Only extracted features", "Both audio and features", "Just prompt"],
+            index=2,  # Default to "Both audio and features"
+            horizontal=True,
+            key=f"upload_byo_option_{selected_task}",
+        )
+
+        # Different UI for "Just prompt" - conversation mode
+        if byo_option == "Just prompt":
+            st.markdown("##### Conversation Mode")
+            st.caption("Have a back-and-forth conversation with Gemini")
+
+            # Display chat history
+            for msg in st.session_state.upload_byo_chat_history:
+                if msg["role"] == "user":
+                    st.chat_message("user").markdown(msg["content"])
+                else:
+                    st.chat_message("assistant").markdown(msg["content"])
+
+            # Chat input
+            byo_prompt = st.chat_input("Type your message...", key=f"upload_byo_chat_input_{selected_task}")
+            byo_submit_clicked = byo_prompt is not None and byo_prompt.strip() != ""
+
+            # Clear conversation button
+            if st.session_state.upload_byo_chat_history:
+                if st.button("Clear Conversation", key=f"upload_byo_clear_chat_{selected_task}"):
+                    st.session_state.upload_byo_chat_history = []
+                    st.rerun()
+
+            # Handle "Just prompt" conversation - no file needed
+            if byo_submit_clicked:
+                model, err = init_gemini()
+                if err:
+                    st.error(f" {err}")
+                else:
+                    try:
+                        # Build history for chat session from stored history
+                        gemini_history = []
+                        for msg in st.session_state.upload_byo_chat_history:
+                            gemini_history.append({
+                                "role": msg["role"] if msg["role"] == "user" else "model",
+                                "parts": [msg["content"]]
+                            })
+
+                        # Create chat session with history
+                        chat = model.start_chat(history=gemini_history)
+
+                        # Add user message to our history
+                        st.session_state.upload_byo_chat_history.append({
+                            "role": "user",
+                            "content": byo_prompt
+                        })
+
+                        # Send message and get response
+                        with st.spinner("Gemini is thinking..."):
+                            response = chat.send_message(byo_prompt)
+                            response_text = response.text if hasattr(response, "text") else str(response)
+
+                        # Add assistant response to history
+                        st.session_state.upload_byo_chat_history.append({
+                            "role": "assistant",
+                            "content": response_text
+                        })
+
+                        # Rerun to show updated chat
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"Gemini failed: {e}")
+
+            st.markdown("---")
+            return  # "Just prompt" doesn't need file upload
+        else:
+            # Standard text area for other options
+            byo_prompt = st.text_area(
+                "Enter your custom prompt:",
+                placeholder="E.g., 'Analyze this voice recording for signs of vocal fatigue' or 'Compare this voice to typical patterns for a 30-year-old speaker'",
+                height=150,
+                key=f"upload_byo_prompt_{selected_task}",
+            )
+
+        st.markdown("---")
+
+    # Stop if no analysis mode selected (except for BYO which continues above)
+    if st.session_state.upload_analysis_mode is None:
+        st.info("Please select an analysis mode to continue.")
+        return
+
+    # --- Step 3: File Upload ---
+    st.markdown("#### Upload Audio File")
 
     # --- Create / get task folder ---
     client = get_box_client()
     task_folder_id = ensure_task_folder(client, folder_id, selected_task)
 
     # --- Task-scoped widget keys to force reset when task changes ---
-    uploader_key   = f"upload_uploader_{selected_task}"
-    save_auto_key  = f"upload_save_auto_{selected_task}"
-    analyze_btn_key = f"upload_analyze_{selected_task}"
+    uploader_key = f"upload_uploader_{selected_task}"
+    save_auto_key = f"upload_save_auto_{selected_task}"
 
-    # --- Uploader appears only after task is selected ---
     up = st.file_uploader(
         "Upload audio (WAV only)",
         type=["wav"],
-        key=uploader_key,        # <-- new widget when task changes -> empty
+        key=uploader_key,
     )
     if up is None:
         st.info("Upload a WAV file to begin analysis.")
@@ -205,68 +358,22 @@ def upload_tab(folder_id):
     st.caption("Trim the audio to analyse a selected portion")
     save_auto = st.checkbox("Save the analysis automatically", key=save_auto_key)
 
-    # --- Persist AI outputs across reruns ---
-    if "upload_ai_df" not in st.session_state:
-        st.session_state.upload_ai_df = None
-    if "upload_ai_gemini_text" not in st.session_state:
-        st.session_state.upload_ai_gemini_text = None
-    if "upload_ai_last_task" not in st.session_state:
-        st.session_state.upload_ai_last_task = None
-    # BYO prompt session state
-    if "upload_byo_gemini_text" not in st.session_state:
-        st.session_state.upload_byo_gemini_text = None
-    if "upload_byo_mode_active" not in st.session_state:
-        st.session_state.upload_byo_mode_active = False
-
-    # Clear previous AI results when switching tasks
-    if st.session_state.upload_ai_last_task != selected_task:
-        st.session_state.upload_ai_df = None
-        st.session_state.upload_ai_gemini_text = None
-        st.session_state.upload_byo_gemini_text = None
-        st.session_state.upload_byo_mode_active = False
-        st.session_state.upload_ai_last_task = selected_task
-
-    # --- Three buttons side by side ---
-    col1, col2, col3 = st.columns(3)
-    analyze_clicked = col1.button("Analyse Audio", key=analyze_btn_key)
-    analyze_ai_clicked = col2.button("Default Analysis with AI", key=f"upload_analyze_ai_{selected_task}")
-    analyze_byo_clicked = col3.button("Analyse with BYO Prompt", key=f"upload_analyze_byo_{selected_task}")
-
-    # --- BYO Prompt UI Elements ---
-    # Show BYO options when BYO button is clicked or mode is active
-    if analyze_byo_clicked:
-        st.session_state.upload_byo_mode_active = True
-
-    if st.session_state.upload_byo_mode_active:
-        st.markdown("---")
-        st.markdown("#### BYO Prompt Configuration")
-
-        byo_option = st.radio(
-            "What to send to AI:",
-            options=["Only audio", "Only extracted features", "Both audio and features", "Just prompt"],
-            index=2,  # Default to "Both audio and features"
+    # Reference group selector (used by AI mode)
+    if st.session_state.upload_analysis_mode == "ai":
+        st.radio(
+            "Reference group for typical ranges (self-reported):",
+            options=["Unknown / show both", "Adult male (self-reported)", "Adult female (self-reported)"],
+            index=0,
             horizontal=True,
-            key=f"upload_byo_option_{selected_task}",
+            key=f"upload_gemini_reference_group_{selected_task}",
         )
 
-        byo_prompt = st.text_area(
-            "Enter your custom prompt:",
-            placeholder="E.g., 'Analyze this voice recording for signs of vocal fatigue' or 'Compare this voice to typical patterns for a 30-year-old speaker'",
-            height=150,
-            key=f"upload_byo_prompt_{selected_task}",
-        )
-
-        # Submit button for BYO analysis
-        byo_submit_clicked = st.button("Submit BYO Analysis", key=f"upload_byo_submit_{selected_task}", type="primary")
-        st.markdown("---")
-    else:
-        byo_submit_clicked = False
-        byo_option = None
-        byo_prompt = ""
+    # --- Step 4: Run Analysis Button ---
+    analyze_clicked = st.button("Run Analysis", type="primary", key=f"upload_run_analysis_{selected_task}")
 
     y_region = None
 
-    if analyze_clicked or analyze_ai_clicked or byo_submit_clicked:
+    if analyze_clicked:
         if result and result.get("selectedRegion"):
             start = result["selectedRegion"]["start"]
             end = result["selectedRegion"]["end"]
@@ -278,17 +385,8 @@ def upload_tab(folder_id):
             y_region = y
             st.info("No region selected: Analysing entire file")
 
-    # Quick reference group selector (self-reported; used by AI button)
-    st.radio(
-        "Reference group for typical ranges (self-reported):",
-        options=["Unknown / show both", "Adult male (self-reported)", "Adult female (self-reported)"],
-        index=0,
-        horizontal=True,
-        key=f"upload_gemini_reference_group_{selected_task}",
-    )
-
     if y_region is not None and len(y_region) > 0:
-        # Analysis
+        # PRAAT Analysis
         snd = pm.Sound(y_region, sampling_frequency=sr)
         pitch = pm.praat.call(snd, "To Pitch (filtered autocorrelation)", 0.0, 30.0, 600.0, 15, "no", 0.03, 0.09, 0.50, 0.055, 0.35, 0.14)
         intensity = snd.to_intensity()
@@ -328,8 +426,8 @@ def upload_tab(folder_id):
             st.pyplot(fig)
             figs["spectrogram"] = fig
 
-            # If "Analyse Audio with AI" was clicked, call Gemini now and persist response
-            if analyze_ai_clicked:
+            # If AI mode, call Gemini
+            if st.session_state.upload_analysis_mode == "ai":
                 model, err = init_gemini()
                 if err:
                     st.session_state.upload_ai_gemini_text = f" {err}"
@@ -361,10 +459,10 @@ def upload_tab(folder_id):
                     except Exception as e:
                         st.session_state.upload_ai_gemini_text = f"Gemini failed: {e}"
 
-            # If BYO submit was clicked, call Gemini with custom prompt
-            if byo_submit_clicked:
+            # If BYO mode with audio/features options
+            if st.session_state.upload_analysis_mode == "byo" and byo_option != "Just prompt":
                 if not byo_prompt or not byo_prompt.strip():
-                    st.warning("Please enter a custom prompt before submitting.")
+                    st.warning("Please enter a custom prompt before running analysis.")
                 else:
                     model, err = init_gemini()
                     if err:
@@ -415,27 +513,6 @@ def upload_tab(folder_id):
                 st.info("Analysis completed (not saved). Check 'Save automatically' to reanalyse and store results.")
                 st.toast("Analysis completed (not saved).")
     else:
-        # Handle "Just prompt" BYO option - no audio analysis needed
-        if byo_submit_clicked and byo_option == "Just prompt":
-            if not byo_prompt or not byo_prompt.strip():
-                st.warning("Please enter a custom prompt before submitting.")
-            else:
-                model, err = init_gemini()
-                if err:
-                    st.session_state.upload_byo_gemini_text = f" {err}"
-                else:
-                    try:
-                        with st.spinner("Sending BYO prompt to Gemini..."):
-                            st.session_state.upload_byo_gemini_text = gemini_byo_prompt(
-                                model=model,
-                                user_prompt=byo_prompt,
-                                byo_option=byo_option,
-                                df_features=None,
-                                audio_wav_bytes=None,
-                            )
-                    except Exception as e:
-                        st.session_state.upload_byo_gemini_text = f"Gemini failed: {e}"
-
         # If user previously ran AI and we reran, still show persisted outputs
         if st.session_state.upload_ai_df is not None:
             st.subheader("Extracted Features (previous run)")
