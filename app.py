@@ -15,8 +15,8 @@ logo_col, title_col = st.columns([1, 5])
 with logo_col:
     st.image("main_logo_violet.svg", width=80)
 with title_col:
-    st.title("Acoustic Analysis Dashboard")
-    st.caption("Backend processing with PRAAT")
+    st.title("BLab Acoustic Analysis Dashboard")
+    st.caption("Platform is backed with Praat-Parselmouth & Gemini")
 
 
 # ---------------- AUTHENTICATION ----------------
