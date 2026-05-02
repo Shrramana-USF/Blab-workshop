@@ -13,6 +13,7 @@ from box_sdk_gen.managers.uploads import UploadFileAttributes, UploadFileAttribu
 from box_sdk_gen.internal.utils import read_byte_stream
 import streamlit as st
 from streamlit_advanced_audio import audix, WaveSurferOptions
+import google.generativeai as genai
 
 # ---------------- BOX SETUP ----------------
 BASE_FOLDER_ID = "341557643428"
@@ -390,3 +391,469 @@ def fetch_all_features(client: BoxClient, user_folder_id: str):
         return pd.concat(all_data, ignore_index=True), audio_map
     else:
         return pd.DataFrame(), audio_map
+
+
+# ---------------- GEMINI AI FUNCTIONS ----------------
+
+def init_gemini():
+    """
+    Gemini via AI Studio API key stored securely in Streamlit Secrets or env var.
+    Prefer Streamlit Cloud Secrets: GOOGLE_API_KEY = "..."
+    """
+    api_key = None
+    try:
+        # Supports top-level: GOOGLE_API_KEY = "..."
+        api_key = st.secrets.get("GOOGLE_API_KEY", None)
+        # Supports sectioned:
+        # [Gemini]
+        # GOOGLE_API_KEY = "..."
+        if not api_key:
+            api_key = st.secrets.get("Gemini", {}).get("GOOGLE_API_KEY", None)
+    except Exception:
+        api_key = None
+
+    if not api_key:
+        api_key = os.getenv("GOOGLE_API_KEY")
+
+    if not api_key:
+        return None, "Missing GOOGLE_API_KEY. Add it to Streamlit Secrets (recommended) or as an environment variable."
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel("gemini-3.1-pro-preview")
+
+    return model, None
+
+
+def gemini_review_voice_with_audio(
+    model,
+    df_features: pd.DataFrame,
+    audio_wav_bytes: bytes,
+    task_name: str,
+    reference_group: str
+):
+    """
+    Sends features + AUDIO (wav bytes) to Gemini for interpretation.
+    Does NOT infer/guess gender/sex/identity. Uses user-selected reference group.
+    """
+    rows = df_features.to_dict(orient="records")
+
+    prompt = f"""
+You are assisting with voice acoustics interpretation for the task: "{task_name}".
+
+IMPORTANT:
+- Use the selected reference group only: "{reference_group}".
+- If reference group is "Unknown / show both", provide interpretation for typical adult male and typical adult female ranges, without guessing which applies.
+- Do not provide a medical diagnosis. Use cautious, non-diagnostic language.
+
+Input data:
+1) Extracted acoustic features (Feature, Value): {rows}
+2) Audio recording is attached (WAV).
+
+Please produce:
+A) Summary (2–5 sentences). IDENTIFY "gender/sex" and "age" based on the audio.
+B) Range check vs reference group (bullets). If a feature is out of typical ranges, say so with uncertainty and mention it depends on recording/task.
+C) Any potential flags (bullets) — only if supported by the data/audio; otherwise "No obvious flags."
+D) Suggestions (bullets): e.g., repeat recording conditions, consult clinician if symptoms exist, etc.
+"""
+
+    audio_part = {
+        "inline_data": {
+            "mime_type": "audio/wav",
+            "data": audio_wav_bytes
+        }
+    }
+
+    resp = model.generate_content([prompt, audio_part], generation_config=genai.GenerationConfig(temperature=0.5))
+    return resp.text if hasattr(resp, "text") else str(resp)
+
+
+def gemini_byo_prompt(
+    model,
+    user_prompt: str,
+    byo_option: str,
+    df_features: pd.DataFrame = None,
+    audio_wav_bytes: bytes = None
+):
+    """
+    Sends user's custom prompt with optional audio and/or features to Gemini.
+
+    byo_option can be:
+    - "Only audio": sends prompt + audio WAV bytes (no features)
+    - "Only extracted features": sends prompt + features DataFrame (no audio)
+    - "Both audio and features": sends prompt + audio + features
+    - "Just prompt": sends only the user's text prompt (no audio, no features)
+    """
+    content_parts = []
+
+    if byo_option == "Only audio":
+        full_prompt = f"{user_prompt}\n\n[Audio recording is attached below]"
+        content_parts.append(full_prompt)
+        if audio_wav_bytes:
+            audio_part = {
+                "inline_data": {
+                    "mime_type": "audio/wav",
+                    "data": audio_wav_bytes
+                }
+            }
+            content_parts.append(audio_part)
+
+    elif byo_option == "Only extracted features":
+        rows = df_features.to_dict(orient="records") if df_features is not None else []
+        full_prompt = f"{user_prompt}\n\nExtracted acoustic features (Feature, Value): {rows}"
+        content_parts.append(full_prompt)
+
+    elif byo_option == "Both audio and features":
+        rows = df_features.to_dict(orient="records") if df_features is not None else []
+        full_prompt = f"{user_prompt}\n\nExtracted acoustic features (Feature, Value): {rows}\n\n[Audio recording is attached below]"
+        content_parts.append(full_prompt)
+        if audio_wav_bytes:
+            audio_part = {
+                "inline_data": {
+                    "mime_type": "audio/wav",
+                    "data": audio_wav_bytes
+                }
+            }
+            content_parts.append(audio_part)
+
+    else:  # "Just prompt"
+        content_parts.append(user_prompt)
+
+    resp = model.generate_content(content_parts)
+    return resp.text if hasattr(resp, "text") else str(resp)
+
+
+# ---------------- SHARED UI COMPONENTS ----------------
+
+# Task list used by both upload and record modes
+TASKS = [
+    "Rainbow passage",
+    "Maximum sustained phonation on 'aaah'",
+    "Comfortable sustained phonation on 'eeee'",
+    "Glide up to your highest pitch on 'eeee'",
+    "Glide down to your lowest pitch on 'eeee'",
+    "Sustained 'aaah' at minimum volume",
+    "Maximum loudness level (brief 'AAAH')",
+    "Conversational speech",
+    "Random"
+]
+
+# Analysis mode labels
+MODE_LABELS = {
+    "praat": "PRAAT Analysis Only",
+    "ai": "Default Analysis with AI",
+    "byo": "BYO Prompt"
+}
+
+
+def init_session_state(prefix: str):
+    """Initialize session state variables for a given mode prefix (upload/record)."""
+    if f"{prefix}_ai_df" not in st.session_state:
+        st.session_state[f"{prefix}_ai_df"] = None
+    if f"{prefix}_ai_gemini_text" not in st.session_state:
+        st.session_state[f"{prefix}_ai_gemini_text"] = None
+    if f"{prefix}_ai_last_task" not in st.session_state:
+        st.session_state[f"{prefix}_ai_last_task"] = None
+    if f"{prefix}_byo_gemini_text" not in st.session_state:
+        st.session_state[f"{prefix}_byo_gemini_text"] = None
+    if f"{prefix}_byo_mode_active" not in st.session_state:
+        st.session_state[f"{prefix}_byo_mode_active"] = False
+    if f"{prefix}_byo_chat_history" not in st.session_state:
+        st.session_state[f"{prefix}_byo_chat_history"] = []
+    if f"{prefix}_analysis_mode" not in st.session_state:
+        st.session_state[f"{prefix}_analysis_mode"] = None
+
+
+def clear_session_state(prefix: str):
+    """Clear AI results when switching tasks."""
+    st.session_state[f"{prefix}_ai_df"] = None
+    st.session_state[f"{prefix}_ai_gemini_text"] = None
+    st.session_state[f"{prefix}_byo_gemini_text"] = None
+    st.session_state[f"{prefix}_byo_mode_active"] = False
+    st.session_state[f"{prefix}_byo_chat_history"] = []
+    st.session_state[f"{prefix}_analysis_mode"] = None
+
+
+def render_analysis_mode_buttons(prefix: str, selected_task: str):
+    """Render the 3 analysis mode buttons and return current mode."""
+    st.markdown("---")
+    st.markdown("#### Select Analysis Mode")
+    col1, col2, col3 = st.columns(3)
+
+    if col1.button("Analyze Audio", key=f"{prefix}_analyze_{selected_task}", use_container_width=True):
+        st.session_state[f"{prefix}_analysis_mode"] = "praat"
+        st.session_state[f"{prefix}_byo_mode_active"] = False
+
+    if col2.button("Default Analysis with AI", key=f"{prefix}_analyze_ai_{selected_task}", use_container_width=True):
+        st.session_state[f"{prefix}_analysis_mode"] = "ai"
+        st.session_state[f"{prefix}_byo_mode_active"] = False
+
+    if col3.button("BYO Prompt", key=f"{prefix}_analyze_byo_{selected_task}", use_container_width=True):
+        st.session_state[f"{prefix}_analysis_mode"] = "byo"
+        st.session_state[f"{prefix}_byo_mode_active"] = True
+
+    # Show current selection
+    if st.session_state[f"{prefix}_analysis_mode"]:
+        st.success(f"Selected: **{MODE_LABELS[st.session_state[f'{prefix}_analysis_mode']]}**")
+
+    return st.session_state[f"{prefix}_analysis_mode"]
+
+
+def render_byo_config(prefix: str, selected_task: str):
+    """
+    Render BYO Prompt configuration UI.
+    Returns (byo_option, byo_prompt, should_return) tuple.
+    should_return is True if we're in "Just prompt" mode and handled the conversation.
+    """
+    byo_option = None
+    byo_prompt = ""
+
+    if not st.session_state[f"{prefix}_byo_mode_active"]:
+        return byo_option, byo_prompt, False
+
+    st.markdown("---")
+    st.markdown("#### BYO Prompt Configuration")
+
+    byo_option = st.radio(
+        "What to send to AI:",
+        options=["Only audio", "Only extracted features", "Both audio and features", "Just prompt"],
+        index=2,
+        horizontal=True,
+        key=f"{prefix}_byo_option_{selected_task}",
+    )
+
+    # Different UI for "Just prompt" - conversation mode
+    if byo_option == "Just prompt":
+        st.markdown("##### Conversation Mode")
+        st.caption("Have a conversation with Gemini")
+
+        # Display chat history
+        for msg in st.session_state[f"{prefix}_byo_chat_history"]:
+            if msg["role"] == "user":
+                st.chat_message("user").markdown(msg["content"])
+            else:
+                st.chat_message("assistant").markdown(msg["content"])
+
+        # Chat input
+        byo_chat_prompt = st.chat_input("Type your message...", key=f"{prefix}_byo_chat_input_{selected_task}")
+        byo_submit_clicked = byo_chat_prompt is not None and byo_chat_prompt.strip() != ""
+
+        # Clear conversation button
+        if st.session_state[f"{prefix}_byo_chat_history"]:
+            if st.button("Clear Conversation", key=f"{prefix}_byo_clear_chat_{selected_task}"):
+                st.session_state[f"{prefix}_byo_chat_history"] = []
+                st.rerun()
+
+        # Handle conversation
+        if byo_submit_clicked:
+            model, err = init_gemini()
+            if err:
+                st.error(f" {err}")
+            else:
+                try:
+                    # Build history for chat session
+                    gemini_history = []
+                    for msg in st.session_state[f"{prefix}_byo_chat_history"]:
+                        gemini_history.append({
+                            "role": msg["role"] if msg["role"] == "user" else "model",
+                            "parts": [msg["content"]]
+                        })
+
+                    chat = model.start_chat(history=gemini_history)
+
+                    st.session_state[f"{prefix}_byo_chat_history"].append({
+                        "role": "user",
+                        "content": byo_chat_prompt
+                    })
+
+                    with st.spinner("Gemini is thinking..."):
+                        response = chat.send_message(byo_chat_prompt)
+                        response_text = response.text if hasattr(response, "text") else str(response)
+
+                    st.session_state[f"{prefix}_byo_chat_history"].append({
+                        "role": "assistant",
+                        "content": response_text
+                    })
+
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Gemini failed: {e}")
+
+        st.markdown("---")
+        return byo_option, byo_prompt, True  # Signal to return early
+    else:
+        # Standard text area for other options
+        byo_prompt = st.text_area(
+            "Enter your custom prompt:",
+            placeholder="",
+            height=150,
+            key=f"{prefix}_byo_prompt_{selected_task}",
+        )
+
+    st.markdown("---")
+    return byo_option, byo_prompt, False
+
+
+def render_reference_group_selector(prefix: str, selected_task: str):
+    """Render reference group selector for AI mode."""
+    if st.session_state[f"{prefix}_analysis_mode"] == "ai":
+        st.radio(
+            "Reference group for typical ranges (self-reported):",
+            options=["Unknown / show both", "Adult male (self-reported)", "Adult female (self-reported)"],
+            index=0,
+            horizontal=True,
+            key=f"{prefix}_gemini_reference_group_{selected_task}",
+        )
+
+
+def get_audio_region(result, y, sr):
+    """Extract audio region from audix result. Returns (y_region, info_message)."""
+    if result and result.get("selectedRegion"):
+        start = result["selectedRegion"]["start"]
+        end = result["selectedRegion"]["end"]
+        start_idx = int(start * sr)
+        end_idx = int(end * sr)
+        return y[start_idx:end_idx], f"Analysing selected region: {start:.2f}s – {end:.2f}s"
+    else:
+        return y, "No region selected: Analysing entire file"
+
+
+def run_praat_analysis(y_region, sr):
+    """
+    Run PRAAT analysis on audio region.
+    Returns (snd, pitch, intensity, df, figs) or (None, None, None, None, None) if failed.
+    """
+    import parselmouth as pm
+
+    snd = pm.Sound(y_region, sampling_frequency=sr)
+    pitch = snd.to_pitch(time_step=None, pitch_floor=30, pitch_ceiling=600)
+    intensity = snd.to_intensity()
+
+    f0 = estimate_f0_praat(pitch)
+    if f0 is None:
+        st.warning("No stable fundamental frequency detected.")
+        return None, None, None, None, None
+
+    features = summarize_features(snd, pitch, intensity)
+    df = pd.DataFrame(list(features.items()), columns=["Feature", "Value"])
+
+    # Display features
+    st.subheader("Extracted Features")
+    st.dataframe(df, width="stretch", hide_index=True)
+
+    # Create plots
+    figs = {}
+
+    xs, f0_contour = pitch_contour(pitch)
+    fig, ax = plt.subplots()
+    ax.plot(xs, f0_contour, color="blue")
+    ax.set_title("Pitch contour")
+    st.pyplot(fig)
+    figs["pitch"] = fig
+
+    xs, inten_contour = intensity_contour(intensity)
+    fig, ax = plt.subplots()
+    ax.plot(xs, inten_contour, color="green")
+    ax.set_title("Intensity contour")
+    st.pyplot(fig)
+    figs["intensity"] = fig
+
+    return snd, pitch, intensity, df, figs
+
+
+def run_ai_analysis(prefix: str, selected_task: str, df, y_region, sr):
+    """Run default AI analysis with Gemini."""
+    model, err = init_gemini()
+    if err:
+        st.session_state[f"{prefix}_ai_gemini_text"] = f" {err}"
+        return
+
+    reference_group = st.session_state.get(
+        f"{prefix}_gemini_reference_group_{selected_task}", "Unknown / show both"
+    )
+
+    # Convert to WAV bytes
+    region_temp_path = save_temp_mono_wav(y_region, sr)
+    try:
+        with open(region_temp_path, "rb") as f:
+            region_wav_bytes = f.read()
+    finally:
+        try:
+            os.unlink(region_temp_path)
+        except Exception:
+            pass
+
+    try:
+        with st.spinner("Sending features + audio to Gemini..."):
+            st.session_state[f"{prefix}_ai_gemini_text"] = gemini_review_voice_with_audio(
+                model=model,
+                df_features=df,
+                audio_wav_bytes=region_wav_bytes,
+                task_name=selected_task,
+                reference_group=reference_group,
+            )
+    except Exception as e:
+        st.session_state[f"{prefix}_ai_gemini_text"] = f"Gemini failed: {e}"
+
+
+def run_byo_analysis(prefix: str, byo_option: str, byo_prompt: str, df, y_region, sr):
+    """Run BYO prompt analysis with Gemini."""
+    if not byo_prompt or not byo_prompt.strip():
+        st.warning("Please enter a custom prompt before running analysis.")
+        return
+
+    model, err = init_gemini()
+    if err:
+        st.session_state[f"{prefix}_byo_gemini_text"] = f" {err}"
+        return
+
+    # Prepare audio bytes if needed
+    region_wav_bytes = None
+    if byo_option in ["Only audio", "Both audio and features"]:
+        region_temp_path = save_temp_mono_wav(y_region, sr)
+        try:
+            with open(region_temp_path, "rb") as f:
+                region_wav_bytes = f.read()
+        finally:
+            try:
+                os.unlink(region_temp_path)
+            except Exception:
+                pass
+
+    try:
+        with st.spinner("Sending BYO prompt to Gemini..."):
+            st.session_state[f"{prefix}_byo_gemini_text"] = gemini_byo_prompt(
+                model=model,
+                user_prompt=byo_prompt,
+                byo_option=byo_option,
+                df_features=df if byo_option in ["Only extracted features", "Both audio and features"] else None,
+                audio_wav_bytes=region_wav_bytes,
+            )
+    except Exception as e:
+        st.session_state[f"{prefix}_byo_gemini_text"] = f"Gemini failed: {e}"
+
+
+def display_gemini_results(prefix: str):
+    """Display Gemini responses."""
+    if st.session_state[f"{prefix}_ai_gemini_text"]:
+        st.subheader("Gemini Response")
+        st.markdown(st.session_state[f"{prefix}_ai_gemini_text"])
+
+    if st.session_state[f"{prefix}_byo_gemini_text"]:
+        st.subheader("BYO Prompt Response")
+        st.markdown(st.session_state[f"{prefix}_byo_gemini_text"])
+
+
+def display_previous_results(prefix: str):
+    """Display results from previous analysis run."""
+    if st.session_state[f"{prefix}_ai_df"] is not None:
+        st.subheader("Extracted Features (previous run)")
+        st.dataframe(st.session_state[f"{prefix}_ai_df"], width="stretch", hide_index=True)
+
+    if st.session_state[f"{prefix}_ai_gemini_text"]:
+        st.subheader("Gemini Response (previous run)")
+        st.markdown(st.session_state[f"{prefix}_ai_gemini_text"])
+
+    if st.session_state[f"{prefix}_byo_gemini_text"]:
+        st.subheader("BYO Prompt Response (previous run)")
+        st.markdown(st.session_state[f"{prefix}_byo_gemini_text"])
