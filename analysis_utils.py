@@ -450,7 +450,7 @@ Input data:
 2) Audio recording is attached (WAV).
 
 Please produce:
-A) Summary (2–5 sentences). IDENTIFY "gender/sex" and "age" based on the audio.
+A) Summary (2–5 sentences). IDENTIFY "gender/sex" and "age" based on the audio and does the task name match the audio?
 B) Range check vs reference group (bullets). If a feature is out of typical ranges, say so with uncertainty and mention it depends on recording/task.
 C) Any potential flags (bullets) — only if supported by the data/audio; otherwise "No obvious flags."
 D) Suggestions (bullets): e.g., repeat recording conditions, consult clinician if symptoms exist, etc.
@@ -616,7 +616,7 @@ def render_byo_config(prefix: str, selected_task: str):
     byo_option = st.radio(
         "What to send to AI:",
         options=["Only audio", "Only extracted features", "Both audio and features", "Just prompt"],
-        index=0,  # Default to "Only audio"
+        index=2,
         horizontal=True,
         key=f"{prefix}_byo_option_{selected_task}",
     )
