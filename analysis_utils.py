@@ -616,7 +616,7 @@ def render_byo_config(prefix: str, selected_task: str):
     byo_option = st.radio(
         "What to send to AI:",
         options=["Only audio", "Only extracted features", "Both audio and features", "Just prompt"],
-        index=2,
+        index=0,  # Default to "Only audio"
         horizontal=True,
         key=f"{prefix}_byo_option_{selected_task}",
     )

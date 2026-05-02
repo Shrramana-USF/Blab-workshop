@@ -91,32 +91,38 @@ def record_tab(folder_id):
         st.info(info_msg)
 
         if y_region is not None and len(y_region) > 0:
-            # Run PRAAT analysis
-            snd, pitch, intensity, df, figs = run_praat_analysis(y_region, sr)
-
-            if df is not None:
-                st.session_state.record_ai_df = df
-
-                # Run AI analysis if selected
-                if analysis_mode == "ai":
-                    run_ai_analysis("record", selected_task, df, y_region, sr)
-
-                # Run BYO analysis if selected
-                if analysis_mode == "byo" and byo_option != "Just prompt":
-                    run_byo_analysis("record", byo_option, byo_prompt, df, y_region, sr)
-
-                # Display Gemini results
+            # BYO "Only audio" - skip PRAAT, just send audio to Gemini
+            if analysis_mode == "byo" and byo_option == "Only audio":
+                run_byo_analysis("record", byo_option, byo_prompt, None, y_region, sr)
                 display_gemini_results("record")
+                st.toast("Analysis completed.")
+            else:
+                # Run PRAAT analysis for other modes
+                snd, pitch, intensity, df, figs = run_praat_analysis(y_region, sr)
 
-                # Save to Box
-                if save_auto:
-                    with st.spinner("Saving the analysis", show_time=True):
-                        save_analysis_to_box(y_region, sr, df, figs, task_folder_id)
-                    st.success("Analyzed and saved results.")
-                    st.toast("Analyzed and saved results.")
-                else:
-                    st.info("Analysis completed (not saved). Check 'Save automatically' to reanalyze and store results.")
-                    st.toast("Analysis completed (not saved).")
+                if df is not None:
+                    st.session_state.record_ai_df = df
+
+                    # Run AI analysis if selected
+                    if analysis_mode == "ai":
+                        run_ai_analysis("record", selected_task, df, y_region, sr)
+
+                    # Run BYO analysis if selected (features or both)
+                    if analysis_mode == "byo" and byo_option in ["Only extracted features", "Both audio and features"]:
+                        run_byo_analysis("record", byo_option, byo_prompt, df, y_region, sr)
+
+                    # Display Gemini results
+                    display_gemini_results("record")
+
+                    # Save to Box
+                    if save_auto:
+                        with st.spinner("Saving the analysis", show_time=True):
+                            save_analysis_to_box(y_region, sr, df, figs, task_folder_id)
+                        st.success("Analyzed and saved results.")
+                        st.toast("Analyzed and saved results.")
+                    else:
+                        st.info("Analysis completed (not saved). Check 'Save automatically' to reanalyze and store results.")
+                        st.toast("Analysis completed (not saved).")
     else:
         # Display previous results if any
         display_previous_results("record")
