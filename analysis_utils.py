@@ -598,11 +598,11 @@ def render_analysis_mode_buttons(prefix: str, selected_task: str):
     return st.session_state[f"{prefix}_analysis_mode"]
 
 
-def render_byo_config(prefix: str, selected_task: str):
+def render_byo_config(prefix: str, selected_task: str, y=None, sr=None):
     """
     Render BYO Prompt configuration UI.
     Returns (byo_option, byo_prompt, should_return) tuple.
-    should_return is True if we're in "Just prompt" mode and handled the conversation.
+    should_return is True if we're in conversation mode and handled the chat.
     """
     byo_option = None
     byo_prompt = ""
@@ -615,15 +615,25 @@ def render_byo_config(prefix: str, selected_task: str):
 
     byo_option = st.radio(
         "What to send to AI:",
-        options=["Only audio", "Only extracted features", "Both audio and features", "Just prompt"],
-        index=2,
+        options=["Only audio", "Only extracted features", "Both audio and features", "Chat"],
+        index=0,  # Default to "Only audio"
         horizontal=True,
         key=f"{prefix}_byo_option_{selected_task}",
     )
 
-    # Different UI for "Just prompt" - conversation mode
-    if byo_option == "Just prompt":
+    # Chat mode with sub-options
+    if byo_option == "Chat":
         st.markdown("##### Conversation Mode")
+
+        # Sub-options for chat
+        chat_mode = st.radio(
+            "Chat context:",
+            options=["Just chat", "Audio + chat", "Audio + features + chat"],
+            index=0,
+            horizontal=True,
+            key=f"{prefix}_chat_mode_{selected_task}",
+        )
+
         st.caption("Have a conversation with Gemini")
 
         # Display chat history
@@ -645,39 +655,108 @@ def render_byo_config(prefix: str, selected_task: str):
 
         # Handle conversation
         if byo_submit_clicked:
-            model, err = init_gemini()
-            if err:
-                st.error(f" {err}")
+            # Check if audio is needed but not available
+            if chat_mode in ["Audio + chat", "Audio + features + chat"] and (y is None or sr is None):
+                st.error("Please upload/record audio first for this chat mode.")
             else:
-                try:
-                    # Build history for chat session
-                    gemini_history = []
-                    for msg in st.session_state[f"{prefix}_byo_chat_history"]:
-                        gemini_history.append({
-                            "role": msg["role"] if msg["role"] == "user" else "model",
-                            "parts": [msg["content"]]
+                model, err = init_gemini()
+                if err:
+                    st.error(f" {err}")
+                else:
+                    try:
+                        # Build content parts based on chat mode
+                        content_parts = []
+
+                        # Add audio if needed (only for first message or context)
+                        if chat_mode == "Audio + chat" and y is not None:
+                            region_temp_path = save_temp_mono_wav(y, sr)
+                            try:
+                                with open(region_temp_path, "rb") as f:
+                                    audio_bytes = f.read()
+                                audio_part = {
+                                    "inline_data": {
+                                        "mime_type": "audio/wav",
+                                        "data": audio_bytes
+                                    }
+                                }
+                                # For first message, include audio context
+                                if len(st.session_state[f"{prefix}_byo_chat_history"]) == 0:
+                                    content_parts.append("[Audio file attached for context]\n\n")
+                                    content_parts.append(audio_part)
+                            finally:
+                                try:
+                                    os.unlink(region_temp_path)
+                                except Exception:
+                                    pass
+
+                        elif chat_mode == "Audio + features + chat" and y is not None:
+                            # Run PRAAT analysis for features
+                            import parselmouth as pm
+                            snd = pm.Sound(y, sampling_frequency=sr)
+                            pitch = snd.to_pitch(time_step=None, pitch_floor=30, pitch_ceiling=600)
+                            intensity = snd.to_intensity()
+                            f0 = estimate_f0_praat(pitch)
+                            if f0 is not None:
+                                features = summarize_features(snd, pitch, intensity)
+                                df = pd.DataFrame(list(features.items()), columns=["Feature", "Value"])
+                                rows = df.to_dict(orient="records")
+
+                                # Add audio
+                                region_temp_path = save_temp_mono_wav(y, sr)
+                                try:
+                                    with open(region_temp_path, "rb") as f:
+                                        audio_bytes = f.read()
+                                    audio_part = {
+                                        "inline_data": {
+                                            "mime_type": "audio/wav",
+                                            "data": audio_bytes
+                                        }
+                                    }
+                                    # For first message, include context
+                                    if len(st.session_state[f"{prefix}_byo_chat_history"]) == 0:
+                                        content_parts.append(f"[Audio file and extracted features attached for context]\n\nFeatures: {rows}\n\n")
+                                        content_parts.append(audio_part)
+                                finally:
+                                    try:
+                                        os.unlink(region_temp_path)
+                                    except Exception:
+                                        pass
+
+                        # Add the user's message
+                        content_parts.append(byo_chat_prompt)
+
+                        # Build history for chat session
+                        gemini_history = []
+                        for msg in st.session_state[f"{prefix}_byo_chat_history"]:
+                            gemini_history.append({
+                                "role": msg["role"] if msg["role"] == "user" else "model",
+                                "parts": [msg["content"]]
+                            })
+
+                        chat = model.start_chat(history=gemini_history)
+
+                        st.session_state[f"{prefix}_byo_chat_history"].append({
+                            "role": "user",
+                            "content": byo_chat_prompt
                         })
 
-                    chat = model.start_chat(history=gemini_history)
+                        with st.spinner("Gemini is thinking..."):
+                            # Send with content parts if first message with context, else just text
+                            if len(content_parts) > 1:
+                                response = chat.send_message(content_parts)
+                            else:
+                                response = chat.send_message(byo_chat_prompt)
+                            response_text = response.text if hasattr(response, "text") else str(response)
 
-                    st.session_state[f"{prefix}_byo_chat_history"].append({
-                        "role": "user",
-                        "content": byo_chat_prompt
-                    })
+                        st.session_state[f"{prefix}_byo_chat_history"].append({
+                            "role": "assistant",
+                            "content": response_text
+                        })
 
-                    with st.spinner("Gemini is thinking..."):
-                        response = chat.send_message(byo_chat_prompt)
-                        response_text = response.text if hasattr(response, "text") else str(response)
+                        st.rerun()
 
-                    st.session_state[f"{prefix}_byo_chat_history"].append({
-                        "role": "assistant",
-                        "content": response_text
-                    })
-
-                    st.rerun()
-
-                except Exception as e:
-                    st.error(f"Gemini failed: {e}")
+                    except Exception as e:
+                        st.error(f"Gemini failed: {e}")
 
         st.markdown("---")
         return byo_option, byo_prompt, True  # Signal to return early

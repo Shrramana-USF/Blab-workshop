@@ -68,9 +68,9 @@ def upload_tab(folder_id):
     analysis_mode = render_analysis_mode_buttons("upload", selected_task)
 
     # --- BYO Prompt Configuration ---
-    byo_option, byo_prompt, should_return = render_byo_config("upload", selected_task)
+    byo_option, byo_prompt, should_return = render_byo_config("upload", selected_task, y=y, sr=sr)
     if should_return:
-        return  # "Just prompt" mode handled
+        return  # Chat mode handled
 
     # Stop if no analysis mode selected
     if analysis_mode is None:
